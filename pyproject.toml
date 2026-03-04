@@ -1,0 +1,32 @@
+[project]
+name = "document-intelligence-refinery"
+version = "0.1.0"
+description = "A multi-stage agentic pipeline for enterprise document extraction"
+authors = [
+    { name = "Chalie Lijalem", email = "chalielijalem@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "pdfplumber",
+    "pymupdf",
+    "docling",
+    "openai",
+    "pyyaml"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]
+
