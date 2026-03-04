@@ -1,0 +1,55 @@
+thresholds:
+  character_density_min: 50.0 # Min chars per page to consider native text
+  image_area_ratio_max: 0.40  # If images cover > 40% of page area, might be mixed/scanned
+  white_space_ratio_max: 0.90 # If > 90% is whitespace, maybe just blank or weird layout
+  table_detection_min_cells: 4 # Minimum cells to consider a table structure
+
+chunking:
+  max_tokens: 512
+  overlap: 50
+  separators: ["\n\n", "\n", " ", ""]
+
+domain_keywords:
+  financial:
+    - invoice
+    - balance sheet
+    - statement
+    - tax
+    - total
+    - currency
+    - account
+    - fiscal
+  medical:
+    - patient
+    - diagnosis
+    - prescription
+    - treatment
+    - history
+    - clinical
+    - physician
+  legal:
+    - agreement
+    - contract
+    - party
+    - witness
+    - law
+    - clause
+    - jurisdiction
+    - signature
+  technical:
+    - specification
+    - manual
+    - guide
+    - diagram
+    - setup
+    - installation
+    - parameter
+  scientific:
+    - abstract
+    - introduction
+    - methodology
+    - results
+    - discussion
+    - references
+    - figure
+    - table
