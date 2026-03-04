@@ -1,55 +1,55 @@
-thresholds:
-  character_density_min: 50.0 # Min chars per page to consider native text
-  image_area_ratio_max: 0.40  # If images cover > 40% of page area, might be mixed/scanned
-  white_space_ratio_max: 0.90 # If > 90% is whitespace, maybe just blank or weird layout
-  table_detection_min_cells: 4 # Minimum cells to consider a table structure
+# Configuration for Document Analysis and Extraction
 
+# Triage Thresholds
+thresholds:
+  character_density_min: 50.0  # Min chars per page to consider native text. If below, likely scanned.
+  image_area_ratio_max: 0.40   # If images cover > 40% of page area, consider mixed/scanned.
+  white_space_ratio_max: 0.90  # If > 90% is whitespace, maybe just blank or weird layout.
+  table_detection_min_cells: 4 # Minimum cells to consider a table structure.
+
+# Extraction Strategies Configuration
+strategies:
+  # Strategy A: FastText (pdfplumber)
+  fast_text:
+    confidence_threshold: 0.85 # Minimum confidence required to accept FastText result.
+    min_chars_per_page: 50     # If a page has fewer chars, penalty is applied.
+    image_penalty_threshold: 0.5 # If image ratio > 0.5, apply penalty.
+
+  # Strategy B: Layout Analysis (Docling/MinerU)
+  layout:
+    confidence_threshold: 0.90 # Minimum confidence. Layout models are usually high confidence.
+    max_pages_per_chunk: 10    # Max pages to process in one go (for memory safety).
+
+  # Strategy C: Vision Language Model (GPT-4o-mini)
+  vision:
+    model: "gpt-4o-mini"
+    confidence_threshold: 0.70 # Vision models might hallucinate or vary, lower threshold.
+    max_tokens: 30000          # Total token budget for the run.
+    max_cost_usd: 3.00         # Hard cost cap in USD.
+    cost_per_1k_input: 0.00015
+    cost_per_1k_output: 0.0006
+
+# Router Escalation Logic
+router:
+  # The sequence of strategies to try. If one fails (confidence < threshold), escalate to next.
+  escalation_chain: 
+    - "FastTextExtractor"
+    - "LayoutExtractor"
+    - "VisionExtractor"
+
+  # Final safety flag
+  human_review_threshold: 0.60 # If final strategy confidence is below this, flag for human review.
+
+# Chunking Rules for LDU creation (if needed downstream)
 chunking:
   max_tokens: 512
   overlap: 50
   separators: ["\n\n", "\n", " ", ""]
 
+# Domain Keywords for Triage
 domain_keywords:
-  financial:
-    - invoice
-    - balance sheet
-    - statement
-    - tax
-    - total
-    - currency
-    - account
-    - fiscal
-  medical:
-    - patient
-    - diagnosis
-    - prescription
-    - treatment
-    - history
-    - clinical
-    - physician
-  legal:
-    - agreement
-    - contract
-    - party
-    - witness
-    - law
-    - clause
-    - jurisdiction
-    - signature
-  technical:
-    - specification
-    - manual
-    - guide
-    - diagram
-    - setup
-    - installation
-    - parameter
-  scientific:
-    - abstract
-    - introduction
-    - methodology
-    - results
-    - discussion
-    - references
-    - figure
-    - table
+  financial: ["invoice", "balance sheet", "statement", "tax", "total", "currency", "fiscal"]
+  medical: ["patient", "diagnosis", "prescription", "treatment", "clinical", "physician"]
+  legal: ["agreement", "contract", "party", "witness", "law", "clause", "jurisdiction"]
+  technical: ["specification", "manual", "guide", "diagram", "setup", "installation"]
+  scientific: ["abstract", "introduction", "methodology", "results", "discussion", "figure"]

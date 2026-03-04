@@ -1,7 +1,7 @@
-from typing import List, Any
+from typing import List, Any, Optional, Dict
 import logging
 from src.strategies.base import BaseExtractor
-from src.models import ExtractedDocument, TextBlock, StructuredTable, Figure
+from src.models import ExtractedDocument, TextBlock, StructuredTable, Figure, BBox
 
 logger = logging.getLogger(__name__)
 
@@ -10,24 +10,25 @@ class LayoutExtractor(BaseExtractor):
     Strategy B: Layout-Analysis Extraction (Mocked Docling/MinerU).
     Uses a sophisticated layout model to handle multi-column text, tables, and figures correctly.
     """
+    
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        super().__init__(config)
 
     def extract(self, file_path: str) -> ExtractedDocument:
         logger.info(f"LayoutExtractor (Mock) processing: {file_path}")
         
-        # In a real implementation, this would call `docling.convert()` or similar.
-        # For this exercise, we simulate the output structure.
-        
         # 1. Simulate parsed document structure
+        # Use BBox(x0, y0, x1, y1)
         mock_text_blocks = [
             TextBlock(
                 text="Executive Summary: This document details the financial performance...",
-                bounding_box=(50.0, 50.0, 550.0, 100.0),
+                bounding_box=BBox(x0=50.0, y0=50.0, x1=550.0, y1=100.0),
                 page_number=1,
                 confidence=0.95
             ),
             TextBlock(
                 text="Section 1: Revenue Analysis\nRevenue grew by 15% YoY mostly driven by...",
-                bounding_box=(50.0, 110.0, 300.0, 400.0), # Left column example
+                bounding_box=BBox(x0=50.0, y0=110.0, x1=300.0, y1=400.0), # Left column example
                 page_number=1,
                 confidence=0.92
             ),
@@ -40,7 +41,7 @@ class LayoutExtractor(BaseExtractor):
                     ["Q1", "12.5", "+5%"],
                     ["Q2", "13.1", "+4.8%"]
                 ],
-                bounding_box=(50.0, 450.0, 550.0, 600.0),
+                bounding_box=BBox(x0=50.0, y0=450.0, x1=550.0, y1=600.0),
                 page_number=1,
                 caption="Financial Results 2024"
             )
@@ -49,7 +50,7 @@ class LayoutExtractor(BaseExtractor):
         mock_figures = [
             Figure(
                 alt_text="Bar chart showing revenue trends",
-                bounding_box=(350.0, 110.0, 550.0, 300.0),
+                bounding_box=BBox(x0=350.0, y0=110.0, x1=550.0, y1=300.0),
                 page_number=1,
                 image_ref="fig_1.png"
             )
@@ -63,6 +64,8 @@ class LayoutExtractor(BaseExtractor):
             figures=mock_figures,
             metadata={
                 "extractor": "LayoutExtractor (Mock)",
-                "source_tool": "Docling/MinerU"
+                "source_tool": "Docling/MinerU",
+                "strategy_history": ["LayoutExtractor"],
+                "avg_confidence": 0.94
             }
         )

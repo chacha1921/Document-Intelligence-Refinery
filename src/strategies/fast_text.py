@@ -1,8 +1,8 @@
 import pdfplumber
 import logging
-from typing import List, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 from src.strategies.base import BaseExtractor
-from src.models import ExtractedDocument, TextBlock, Figure
+from src.models import ExtractedDocument, TextBlock, Figure, BBox
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,10 @@ class FastTextExtractor(BaseExtractor):
     Best for native digital PDFs with simple layouts.
     Includes confidence scoring based on text density vs image area.
     """
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        super().__init__(config)
+        self.conf_threshold = self.config.get("confidence_threshold", 0.85)
 
     def extract(self, file_path: str) -> ExtractedDocument:
         logger.info(f"FastTextExtractor processing: {file_path}")
@@ -29,32 +33,33 @@ class FastTextExtractor(BaseExtractor):
                     text_content = page.extract_text() or ""
                     words = page.extract_words()
                     
-                    # Estimate bounding box union of all words for the block (simplified)
-                    # In a real scenario, we might cluster words into paragraphs. 
-                    # Here we take the whole page text as one block or split by newline logic if desired.
-                    # Let's treat the whole page text as one block for simplicity in this strategy.
                     if text_content:
                         # Find overall bbox for text
-                        x0 = min((w['x0'] for w in words), default=0)
-                        top = min((w['top'] for w in words), default=0) 
-                        x1 = max((w['x1'] for w in words), default=page.width)
-                        bottom = max((w['bottom'] for w in words), default=page.height)
+                        x0 = min((w['x0'] for w in words), default=0.0)
+                        top = min((w['top'] for w in words), default=0.0)
+                        x1 = max((w['x1'] for w in words), default=page.width) # Fallback to page width
+                        bottom = max((w['bottom'] for w in words), default=page.height) # Fallback to page height
                         
+                        # Validate bbox coordinates before creating BBox
+                        if x0 > x1: x0, x1 = x1, x0
+                        if top > bottom: top, bottom = bottom, top
+
                         extracted_text_blocks.append(TextBlock(
                             text=text_content,
-                            bounding_box=(float(x0), float(top), float(x1), float(bottom)),
+                            bounding_box=BBox(x0=float(x0), y0=float(top), x1=float(x1), y1=float(bottom)),
                             page_number=page_num,
                             confidence=1.0 # Will adjust later based on page scoring
                         ))
 
-                    # 2. Image Extraction (Metadata only for figures list)
-                    # We don't extract binary data here, just references
+                    # 2. Image Extraction
                     for img in page.images:
                          x0, top, x1, bottom = img['x0'], img['top'], img['x1'], img['bottom']
+                         if x0 > x1: x0, x1 = x1, x0
+                         if top > bottom: top, bottom = bottom, top
+                         
                          extracted_figures.append(Figure(
-                             bounding_box=(float(x0), float(top), float(x1), float(bottom)),
+                             bounding_box=BBox(x0=float(x0), y0=float(top), x1=float(x1), y1=float(bottom)),
                              page_number=page_num,
-                             # In a real app, we'd extract and save the image here
                              image_ref=f"page_{page_num}_img_{len(extracted_figures)}"
                          ))
 
@@ -62,21 +67,22 @@ class FastTextExtractor(BaseExtractor):
                     confidence = self._calculate_confidence(page, text_content)
                     
                     # Update confidence for blocks on this page
-                    # In a real system, we'd want per-block confidence, but page-level is fine here.
                     for block in extracted_text_blocks:
                         if block.page_number == page_num:
                             block.confidence = confidence
 
-                    if confidence < 0.5:
+                    if confidence < self.conf_threshold:
                         low_confidence_pages.append(page_num)
-                        logger.warning(f"Page {page_num} has low confidence ({confidence:.2f}).")
+                        logger.warning(f"Page {page_num} has low confidence ({confidence:.2f} < {self.conf_threshold}).")
 
             doc = ExtractedDocument(
                 text_blocks=extracted_text_blocks,
                 figures=extracted_figures,
                 metadata={
                     "extractor": "FastTextExtractor",
-                    "low_confidence_pages": low_confidence_pages
+                    "low_confidence_pages": low_confidence_pages,
+                    "strategy_history": ["FastTextExtractor"],
+                    "avg_confidence": sum(b.confidence for b in extracted_text_blocks) / len(extracted_text_blocks) if extracted_text_blocks else 0.0
                 }
             )
             return doc
@@ -87,9 +93,8 @@ class FastTextExtractor(BaseExtractor):
 
     def _calculate_confidence(self, page, text_content: str) -> float:
         """
-        Calculates a confidence score (0.0 to 1.0) based on character density and image ratio.
+        Calculates a confidence score (0.0 to 1.0) based on configuration thresholds.
         """
-        # Metrics
         page_area = float(page.width * page.height)
         if page_area == 0: return 0.0
 
@@ -100,24 +105,25 @@ class FastTextExtractor(BaseExtractor):
         for img in page.images:
             w = img['x1'] - img['x0']
             h = img['bottom'] - img['top']
-            image_area += w * h
+            if w > 0 and h > 0:
+                image_area += w * h
         
         image_ratio = image_area / page_area
         
-        # Heuristics for Confidence
-        # 1. High image ratio (> 50%) -> Likely scanned or slide -> Lower text confidence
-        # 2. Very low char count per page (< 50 chars) -> Empty or image-only -> Low confidence
-        
         score = 1.0
         
-        if image_ratio > 0.5:
-            score -= 0.4  # Penalty for high image content
-        elif image_ratio > 0.3:
+        # Pull thresholds from self.config or defaults
+        min_chars = self.config.get("min_chars_per_page", 50)
+        image_pen_thresh = self.config.get("image_penalty_threshold", 0.5)
+
+        if image_ratio > image_pen_thresh:
+            score -= 0.4  # Specific penalty
+        elif image_ratio > (image_pen_thresh * 0.6): # A bit below threshold
             score -= 0.2
             
-        if char_count < 50:
+        if char_count < min_chars:
              score -= 0.4 # Penalty for very sparse text
-        elif char_count < 100:
+        elif char_count < (min_chars * 2):
              score -= 0.1
              
         # Clamp score 0 to 1

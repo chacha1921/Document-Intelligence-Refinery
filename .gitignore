@@ -22,3 +22,6 @@ interim_report.md
 
 # Docker
 .dockerignore
+
+# Data
+data/

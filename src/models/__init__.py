@@ -1,6 +1,6 @@
 from typing import List, Optional, Union, Dict, Any, Tuple
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # --- Enums for Document Analysis ---
 
@@ -53,30 +53,44 @@ class DocumentProfile(BaseModel):
 
 # --- Helper Models for Extracted Elements ---
 
-# Defining BoundingBox as a tuple of 4 floats: (x0, y0, x1, y1)
-BoundingBox = Tuple[float, float, float, float]
+class BBox(BaseModel):
+    """
+    Represents a specialized bounding box with validation logic.
+    """
+    x0: float = Field(..., description="Left coordinate")
+    y0: float = Field(..., description="Top coordinate")
+    x1: float = Field(..., description="Right coordinate")
+    y1: float = Field(..., description="Bottom coordinate")
+
+    @model_validator(mode='after')
+    def check_coordinates(self) -> 'BBox':
+        if self.x0 > self.x1:
+            raise ValueError(f"x0 ({self.x0}) cannot be greater than x1 ({self.x1})")
+        if self.y0 > self.y1:
+            raise ValueError(f"y0 ({self.y0}) cannot be greater than y1 ({self.y1})")
+        return self
 
 class TextBlock(BaseModel):
     """Represents a block of text with its coordinates."""
-    text: str
-    bounding_box: BoundingBox
-    page_number: int
-    confidence: float = 1.0
+    text: str = Field(..., min_length=1, description="Content cannot be empty")
+    bounding_box: BBox
+    page_number: int = Field(..., gt=0, description="Page number (1-based)")
+    confidence: float = Field(1.0, ge=0.0, le=1.0)
 
 
 class StructuredTable(BaseModel):
     """Represents a structured table extracted from the document."""
     data: List[List[Union[str, float, None]]]  # Simple row-major representation
-    bounding_box: BoundingBox
-    page_number: int
+    bounding_box: BBox
+    page_number: int = Field(..., gt=0)
     caption: Optional[str] = None
 
 
 class Figure(BaseModel):
     """Represents a figure/image extracted from the document."""
     alt_text: Optional[str] = None
-    bounding_box: BoundingBox
-    page_number: int
+    bounding_box: BBox
+    page_number: int = Field(..., gt=0)
     image_ref: Optional[str] = None # Reference to stored image asset
 
 
@@ -90,6 +104,14 @@ class ExtractedDocument(BaseModel):
     structured_tables: List[StructuredTable] = Field(default_factory=list)
     figures: List[Figure] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    @property
+    def strategy_history(self) -> List[str]:
+        return self.metadata.get("strategy_history", [])
+        
+    @property
+    def needs_human_review(self) -> bool:
+        return self.metadata.get("needs_human_review", False)
 
 
 # --- Logical Document Unit (LDU) ---
@@ -101,7 +123,7 @@ class LDU(BaseModel):
     content: str = Field(..., description="The textual content of the unit.")
     chunk_type: str = Field(..., description="Type of content (e.g., 'paragraph', 'table', 'figure').")
     page_refs: List[int] = Field(..., description="List of page numbers where this content appears.")
-    bounding_box: Optional[BoundingBox] = Field(None, description="Bounding box on the primary page.")
+    bounding_box: Optional[BBox] = Field(None, description="Bounding box on the primary page.")
     parent_section: Optional[str] = Field(None, description="Title of the section this unit belongs to.")
     token_count: int = Field(..., description="Number of tokens in the content.")
     content_hash: str = Field(..., description="Hash of the content for deduplication.")
@@ -114,8 +136,8 @@ class PageIndex(BaseModel):
     Recursive tree structure representing the document's table of contents or logical sections.
     """
     title: str
-    start_page: int
-    end_page: Optional[int] = None
+    start_page: int = Field(..., gt=0)
+    end_page: Optional[int] = Field(None, gt=0)
     children: List["PageIndex"] = Field(default_factory=list)
 
 # Resolve forward reference for recursive model
@@ -130,7 +152,7 @@ class ProvenanceChain(BaseModel):
     """
     source_document_id: str
     source_ldu_id: Optional[str] = None
-    page_number: int
-    bounding_box: Optional[BoundingBox] = None
-    confidence_score: float = 1.0
+    page_number: int = Field(..., gt=0)
+    bounding_box: Optional[BBox] = None
+    confidence_score: float = Field(1.0, ge=0.0, le=1.0)
     extraction_method: str = Field(..., description="Method used for extraction (e.g., 'ocr', 'layout_analysis').")

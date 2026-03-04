@@ -2,7 +2,7 @@ import logging
 import os
 from typing import List, Dict, Any, Optional
 from src.strategies.base import BaseExtractor
-from src.models import ExtractedDocument, TextBlock, StructuredTable, Figure
+from src.models import ExtractedDocument, TextBlock, StructuredTable, Figure, BBox
 
 logger = logging.getLogger(__name__)
 
@@ -10,14 +10,13 @@ class BudgetGuard:
     """
     Simple budget guard to track token usage and prevent overspending.
     """
-    def __init__(self, max_tokens: int = 10000, max_cost_usd: float = 1.0):
+    def __init__(self, max_tokens: int = 10000, max_cost_usd: float = 1.0, cost_input: float = 0.00015, cost_output: float = 0.0006):
         self.max_tokens = max_tokens
         self.max_cost_usd = max_cost_usd
         self.current_tokens = 0
         self.current_cost = 0.0
-        # Simplistic cost per 1k tokens (adjust as needed, e.g., for GPT-4o-mini)
-        self.cost_per_1k_input = 0.00015 
-        self.cost_per_1k_output = 0.0006
+        self.cost_per_1k_input = cost_input
+        self.cost_per_1k_output = cost_output
 
     def check_budget(self, estimated_tokens: int) -> bool:
         if self.current_tokens + estimated_tokens > self.max_tokens:
@@ -42,16 +41,18 @@ class BudgetGuard:
 class VisionExtractor(BaseExtractor):
     """
     Strategy C: Vision-Language Model (VLM) Extraction.
-    Uses GPT-4o-mini (via OpenRouter/OpenAI) to "see" the document and extract structured content.
-    Includes budget protection.
+    Uses GPT-4o-mini (via OpenRouter/OpenAI) to "see" the document.
+    Includes budget protection and relies on config.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
-        self.model_name = config.get("model", "gpt-4o-mini")
+        self.model_name = self.config.get("model", "gpt-4o-mini")
         self.budget_guard = BudgetGuard(
-            max_tokens=config.get("max_tokens", 20000), 
-            max_cost_usd=config.get("max_cost", 2.0)
+            max_tokens=self.config.get("max_tokens", 20000), 
+            max_cost_usd=self.config.get("max_cost_usd", 2.0),
+            cost_input=self.config.get("cost_per_1k_input", 0.00015),
+            cost_output=self.config.get("cost_per_1k_output", 0.0006)
         )
         self.api_key = os.getenv("OPENAI_API_KEY") 
 
@@ -59,29 +60,16 @@ class VisionExtractor(BaseExtractor):
         logger.info(f"VisionExtractor processing: {file_path}")
         
         # 1. Check Budget
-        # Estimate input tokens (rough heuristic: 1 page ~ 1000 tokens for image + prompt)
         estimated_input_tokens = 1000 
         if not self.budget_guard.check_budget(estimated_input_tokens):
             raise RuntimeError("Vision extraction skipped due to budget constraints.")
 
-        # 2. Prepare VLM Call (Mock or Real)
-        # In a real scenario:
-        # - Convert PDF page to image (base64)
-        # - Construct prompt: "Extract all text, tables, and figures from this image..."
-        # - Call `client.chat.completions.create(...)`
-        
         response_content = ""
         usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
         try:
             if self.api_key:
-                # Real logic placeholder
-                # image_b64 = ...
-                # response = client.chat.completions.create(...)
-                # response_content = response.choices[0].message.content
-                # usage = response.usage
-                
-                # Mocking succesful response for structure
+                # Real call placeholder
                 response_content = (
                     "Executive Summary\n"
                     "The document outlines Q3 financial performance.\n\n"
@@ -89,59 +77,55 @@ class VisionExtractor(BaseExtractor):
                 )
                 usage["prompt_tokens"] = 800
                 usage["completion_tokens"] = 150
-                logger.info("Vision API call simulated (API Key present but not used to save verify/cost).")
+                logger.info("Vision API call simulated.")
             else:
-                # Fallback / Mock
                 logger.warning("No OPENAI_API_KEY found. Returning mock VLM data.")
                 response_content = "Mock Vision Content: Extracted text from image analysis."
-                usage["prompt_tokens"] = 500
-                usage["completion_tokens"] = 50
+                usage = {"prompt_tokens": 500, "completion_tokens": 50}
 
             # 3. Update Budget
             self.budget_guard.update_usage(usage["prompt_tokens"], usage["completion_tokens"])
 
-            # 4. Parse Response into ExtractedDocument
-            # Parsing markdown/JSON from VLM to our schema is complex. 
-            # We'll do a simple mapping here.
-            
-            # Simple heuristic parser for demo
+            # 4. Parse Response (Demo logic)
             lines = response_content.split('\n')
             text_blocks = []
             tables = []
             
-            current_block = ""
+            # Use dummy BBox for VLM output as it doesn't always give coordinates
+            dummy_bbox = BBox(x0=0.0, y0=0.0, x1=100.0, y1=100.0)
+            
             for line in lines:
-                if "|" in line: # Detect markdown table row
-                    # Collect into table structure (very simplified)
+                if "|" in line: 
+                    # Detect markdown table row
                     cells = [c.strip() for c in line.split('|') if c.strip()]
                     if cells:
-                         # Append to last table or create new
                          if not tables:
                              tables.append(StructuredTable(
-                                 data=[], bounding_box=(0,0,0,0), page_number=1
+                                 data=[], bounding_box=dummy_bbox, page_number=1
                              ))
                          tables[-1].data.append(cells)
                 else:
                     if line.strip():
                         text_blocks.append(TextBlock(
                             text=line.strip(),
-                            bounding_box=(0,0,0,0), # VLM doesn't give precise bbox usually
+                            bounding_box=dummy_bbox, 
                             page_number=1,
-                            confidence=0.8 # VLM confidence vary
+                            confidence=0.8
                         ))
 
             return ExtractedDocument(
                 text_blocks=text_blocks,
                 structured_tables=tables,
-                figures=[], # Figures often require separate detection prompt
+                figures=[], 
                 metadata={
                     "extractor": "VisionExtractor",
                     "model": self.model_name,
-                    "cost_usd": self.budget_guard.current_cost
+                    "cost_usd": self.budget_guard.current_cost,
+                    "strategy_history": ["VisionExtractor"],
+                    "avg_confidence": 0.8 # Placeholder
                 }
             )
 
         except Exception as e:
             logger.error(f"Vision extraction failed: {e}")
             raise
-

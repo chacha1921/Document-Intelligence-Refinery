@@ -1,9 +1,10 @@
 import json
 import logging
 import time
+import yaml
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
 
 from src.models import DocumentProfile, ExtractedDocument, ExtractionCost
 from src.strategies.base import BaseExtractor
@@ -15,159 +16,197 @@ logger = logging.getLogger(__name__)
 
 class ExtractionRouter:
     """
-    Routes document extraction to the appropriate strategy based on the DocumentProfile.
-    Handles escalation if the initial strategy fails or yields low confidence.
-    Logs all attempts to a ledger.
+    Dynamic strategy router for document extraction.
+    Loads thresholds and escalation policies from `rubric/extraction_rules.yaml`.
     """
 
-    def __init__(self, ledger_path: str = ".refinery/extraction_ledger.jsonl"):
+    def __init__(self, config_path: str = "rubric/extraction_rules.yaml", ledger_path: str = ".refinery/extraction_ledger.jsonl"):
         """
-        Initialize the ExtractionRouter.
-        
-        Args:
-            ledger_path (str): Path to the JSONL ledger file for logging attempts.
+        Initialize the ExtractionRouter with external configuration.
         """
         self.ledger_path = Path(ledger_path)
-        
-        # Ensure ledger directory exists
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Initialize strategies
-        # In a production system, these might be injected or lazily loaded
-        self.fast_text = FastTextExtractor()
-        self.layout = LayoutExtractor()
-        # Vision usually needs API keys from env, passing simple config here if needed
-        self.vision = VisionExtractor(config={"model": "gpt-4o-mini"}) 
+        # Load Configuration
+        self.config = self._load_config(config_path)
+        self.router_config = self.config.get("router", {})
+        self.strategies_config = self.config.get("strategies", {})
+        
+        # Initialize strategies with their specific config
+        # Map strategy names from config to instances
+        self.strategy_map = {
+            "FastTextExtractor": FastTextExtractor(self.config.get("strategies", {}).get("fast_text", {})),
+            "LayoutExtractor": LayoutExtractor(self.config.get("strategies", {}).get("layout", {})),
+            "VisionExtractor": VisionExtractor(self.config.get("strategies", {}).get("vision", {}))
+        }
+        
+        # Define escalation order (list of strategy names)
+        # Default chain if not in config
+        self.escalation_chain = self.router_config.get("escalation_chain", [
+            "FastTextExtractor", "LayoutExtractor", "VisionExtractor"
+        ])
+        
+        self.human_review_threshold = self.router_config.get("human_review_threshold", 0.6)
 
-        logger.info(f"ExtractionRouter initialized. Ledger: {self.ledger_path}")
+        logger.info(f"ExtractionRouter initialized. Strategy Chain: {self.escalation_chain}")
+
+    def _load_config(self, config_path: str) -> Dict[str, Any]:
+        """Loads YAML configuration."""
+        try:
+            with open(config_path, 'r') as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            return {}
 
     def extract(self, file_path: str, profile: DocumentProfile) -> ExtractedDocument:
         """
-        Selects a strategy, extracts content, handles escalation, and logs the attempt.
-        
-        Args:
-            file_path (str): Path to the document.
-            profile (DocumentProfile): The profile from TriageAgent.
-            
-        Returns:
-            ExtractedDocument: The final extracted content.
+        Routes extraction based on profile and automatically escalates if confidence is low.
+        Tracks the full history in metadata.
         """
         start_time = time.time()
         
-        # 1. Select Initial Strategy
-        strategy = self._select_strategy(profile)
-        strategy_name = strategy.__class__.__name__
+        # 1. Determine Starting Strategy Index
+        start_index = self._get_start_index(profile)
         
-        logger.info(f"Selected initial strategy: {strategy_name} for {file_path}")
+        current_doc = None
+        strategy_history = []
         
-        try:
-            # 2. Attempt Extraction
-            result = strategy.extract(file_path)
-            confidence = self._calculate_confidence(result)
+        # Iterate through escalation chain starting from the determined point
+        for i in range(start_index, len(self.escalation_chain)):
+            strategy_name = self.escalation_chain[i]
+            strategy = self.strategy_map.get(strategy_name)
             
-            # 3. Escalation Guard
-            # If FastText was used but confidence is low, escalate to Layout
-            if isinstance(strategy, FastTextExtractor) and confidence < 0.8:
-                logger.warning(f"FastText confidence low ({confidence:.2f}). Escalating to LayoutExtractor.")
+            if not strategy:
+                logger.warning(f"Strategy {strategy_name} not found in map. Skipping.")
+                continue
                 
-                # Log the failed/insufficient attempt
-                self._log_attempt(
-                    file_path=file_path,
-                    strategy_name=strategy_name,
-                    confidence=confidence,
-                    cost_estimate=0.0, # FastText assumed negligible
-                    duration=time.time() - start_time,
-                    status="escalated_low_confidence"
-                )
-                
-                # Switch Strategy
-                strategy = self.layout
-                strategy_name = "LayoutExtractor (Escalated)"
-                start_time = time.time() # Reset timer for new attempt
-                
-                # Retry
+            logger.info(f"Attempting extraction with {strategy_name} (Attempt {i - start_index + 1})")
+            
+            try:
+                # Execute Strategy
+                attempt_start = time.time()
                 result = strategy.extract(file_path)
-                confidence = 1.0 # Layout usually assumed higher confidence for now
-            
-            # 4. Final Logging
-            duration = time.time() - start_time
-            cost_estimate = self._estimate_cost(strategy, result)
-            
-            self._log_attempt(
-                file_path=file_path,
-                strategy_name=strategy_name,
-                confidence=confidence,
-                cost_estimate=cost_estimate,
-                duration=duration,
-                status="success"
-            )
-            
-            return result
+                duration = time.time() - attempt_start
+                
+                # Calculate Confidence
+                confidence = self._calculate_confidence(result)
+                cost = self._estimate_cost(strategy, result)
+                
+                # Check Strategy-Specific Threshold
+                # (Strategies usually check internally but we double check against config if needed)
+                # The strategy config was passed to the strategy, so let's rely on the result's metadata or router's view
+                
+                # Get the threshold for this strategy from config
+                # Need mapping name -> config key
+                # Simple heuristic: "FastTextExtractor" -> "fast_text"
+                config_key = self._get_config_key(strategy_name)
+                threshold = self.strategies_config.get(config_key, {}).get("confidence_threshold", 0.8)
+                
+                status = "success"
+                should_escalate = False
+                
+                if confidence < threshold:
+                    status = "low_confidence_escalating"
+                    should_escalate = True
+                    logger.warning(f"{strategy_name} confidence {confidence:.2f} < threshold {threshold}. Escalating.")
+                
+                # Log this attempt
+                self._log_attempt(file_path, strategy_name, confidence, cost, duration, status)
+                
+                # Update current best result
+                # Merge history
+                if current_doc:
+                    existing_history = current_doc.metadata.get("strategy_history", [])
+                    result.metadata["strategy_history"] = existing_history + [strategy_name]
+                else:
+                     result.metadata["strategy_history"] = [strategy_name]
 
-        except Exception as e:
-            logger.error(f"Extraction failed with strategy {strategy_name}: {e}")
+                current_doc = result
+                strategy_history.append(strategy_name)
+                
+                if not should_escalate:
+                    # Success!
+                    return current_doc
             
-            # Log failure
-            self._log_attempt(
-                file_path=file_path,
-                strategy_name=strategy_name,
-                confidence=0.0,
-                cost_estimate=0.0,
-                duration=time.time() - start_time,
-                status=f"failed: {str(e)}"
-            )
-            raise
+            except Exception as e:
+                logger.error(f"Strategy {strategy_name} failed: {e}")
+                self._log_attempt(file_path, strategy_name, 0.0, 0.0, 0.0, f"failed: {e}")
+                # Continue loop to escalate
+        
+        # If we exit loop, we either succeeded (returned early) or exhausted chain
+        # If we are here, we exhausted the chain or had failures
+        
+        if current_doc:
+            # Check final confidence against human review threshold
+            final_conf = self._calculate_confidence(current_doc)
+            if final_conf < self.human_review_threshold:
+                logger.warning(f"Final confidence {final_conf:.2f} < {self.human_review_threshold}. Flagging for human review.")
+                current_doc.metadata["needs_human_review"] = True
+            
+            return current_doc
+        
+        # If no document produced at all (all crashed)
+        raise RuntimeError("All extraction strategies failed.")
 
-    def _select_strategy(self, profile: DocumentProfile) -> BaseExtractor:
-        """Determines the best strategy based on cost/complexity profile."""
-        if profile.estimated_extraction_cost == ExtractionCost.FAST_TEXT_SUFFICIENT:
-            return self.fast_text
-        elif profile.estimated_extraction_cost == ExtractionCost.NEEDS_LAYOUT_MODEL:
-            return self.layout
+    def _get_start_index(self, profile: DocumentProfile) -> int:
+        """Maps profile cost to index in the escalation chain."""
+        # Simple mapping assuming standard chain [FastText, Layout, Vision]
+        # This implementation assumes the standard order in config.
+        # Ideally, we'd search the list for the mapped strategy.
+        
+        target_strategy = "FastTextExtractor" # Default
+        
+        if profile.estimated_extraction_cost == ExtractionCost.NEEDS_LAYOUT_MODEL:
+            target_strategy = "LayoutExtractor"
         elif profile.estimated_extraction_cost == ExtractionCost.NEEDS_VISION_MODEL:
-            return self.vision
-        else:
-            # Default fallback
-            return self.layout
+            target_strategy = "VisionExtractor"
+            
+        try:
+            return self.escalation_chain.index(target_strategy)
+        except ValueError:
+            logger.warning(f"Target strategy {target_strategy} not in escalation chain. Defaulting to start.")
+            return 0
+
+    def _get_config_key(self, strategy_name: str) -> str:
+        """Helper to map class name to config key."""
+        if "FastText" in strategy_name: return "fast_text"
+        if "Layout" in strategy_name: return "layout"
+        if "Vision" in strategy_name: return "vision"
+        return "unknown"
 
     def _calculate_confidence(self, doc: ExtractedDocument) -> float:
         """
-        Aggregates confidence from the extracted document.
+        Aggregates confidence from the extracted document metadata.
         """
-        # If metadata has generic score
-        if "confidence" in doc.metadata:
-            return float(doc.metadata["confidence"])
+        # Prefer specific metadata field "avg_confidence" if strategies set it
+        if "avg_confidence" in doc.metadata:
+            return float(doc.metadata["avg_confidence"])
             
-        # Check specific metadata from FastText
-        low_conf_pages = doc.metadata.get("low_confidence_pages", [])
-        if low_conf_pages:
-            # Heuristic: if any page is low confidence, overall result is shaky
-            # Return average confidence of blocks if available, otherwise penalty
-            if doc.text_blocks:
-                return sum(b.confidence for b in doc.text_blocks) / len(doc.text_blocks)
-            return 0.4
+        # Fallback to block avg
+        if doc.text_blocks:
+            return sum(b.confidence for b in doc.text_blocks) / len(doc.text_blocks)
             
-        # Default high confidence if no flags
-        return 1.0
+        return 0.0
 
     def _estimate_cost(self, strategy: BaseExtractor, doc: ExtractedDocument) -> float:
         """
-        Returns estimated USD cost for the valid strategy run.
+        Returns estimated USD cost for the strategy run.
         """
+        # Check metadata first
+        if "cost_usd" in doc.metadata:
+            return doc.metadata["cost_usd"]
+            
+        # Fallback estimates
         if isinstance(strategy, FastTextExtractor):
-            return 0.0001 # Micro-cost for CPU time abstraction
+            return 0.0001
         if isinstance(strategy, LayoutExtractor):
-            return 0.01 # Mock cost per page/doc for deep learning inference
-        if isinstance(strategy, VisionExtractor):
-            # Vision extractor might put cost in metadata
-            return doc.metadata.get("cost_usd", 0.0)
+            return 0.01 
         return 0.0
 
     def _log_attempt(self, file_path: str, strategy_name: str, confidence: float, 
                      cost_estimate: float, duration: float, status: str):
-        """
-        Appends a record to the JSONL ledger.
-        """
+        """Appends a record to the JSONL ledger."""
         entry = {
             "timestamp": datetime.utcnow().isoformat(),
             "file_path": str(file_path),
@@ -177,7 +216,6 @@ class ExtractionRouter:
             "duration_seconds": round(duration, 4),
             "status": status
         }
-        
         try:
             with open(self.ledger_path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
