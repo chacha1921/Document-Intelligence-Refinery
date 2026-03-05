@@ -93,14 +93,19 @@ class FastTextExtractor(BaseExtractor):
 
     def _calculate_confidence(self, page, text_content: str) -> float:
         """
-        Calculates a confidence score (0.0 to 1.0) based on configuration thresholds.
+        Calculates a multi-signal confidence score (0.0 to 1.0).
+        Signals:
+        1. Character Density (vs page size)
+        2. Image Area Ratio (high images = low text confidence)
+        3. Alphanumeric Ratio (detect garbage/encoding issues)
+        4. Tofu/Replacement Character Ratio (detect OCR failure)
         """
         page_area = float(page.width * page.height)
         if page_area == 0: return 0.0
 
         char_count = len(text_content)
         
-        # Calculate image area coverage
+        # Signal 1 & 2: Image Ratio & Density (Base Score)
         image_area = 0.0
         for img in page.images:
             w = img['x1'] - img['x0']
@@ -109,22 +114,37 @@ class FastTextExtractor(BaseExtractor):
                 image_area += w * h
         
         image_ratio = image_area / page_area
-        
         score = 1.0
         
-        # Pull thresholds from self.config or defaults
         min_chars = self.config.get("min_chars_per_page", 50)
         image_pen_thresh = self.config.get("image_penalty_threshold", 0.5)
 
         if image_ratio > image_pen_thresh:
-            score -= 0.4  # Specific penalty
-        elif image_ratio > (image_pen_thresh * 0.6): # A bit below threshold
+            score -= 0.4 
+        elif image_ratio > (image_pen_thresh * 0.6):
             score -= 0.2
             
         if char_count < min_chars:
-             score -= 0.4 # Penalty for very sparse text
+             score -= 0.4
         elif char_count < (min_chars * 2):
              score -= 0.1
+
+        # Signal 3: Alphanumeric Ratio (Garbage text check)
+        if char_count > 0:
+            alnum_count = sum(c.isalnum() for c in text_content)
+            alnum_ratio = alnum_count / char_count
+            if alnum_ratio < 0.5: # Mostly symbols/garbage
+                score -= 0.3
+                
+        # Signal 4: Tofu Characters ( or similar)
+        if char_count > 0:
+            tofu_count = text_content.count('') + text_content.count('\ufffd')
+            if tofu_count > 0:
+                tofu_ratio = tofu_count / char_count
+                if tofu_ratio > 0.1: # >10% of text is bad
+                    score -= 0.5
+                elif tofu_ratio > 0.01:
+                    score -= 0.2
              
         # Clamp score 0 to 1
         return max(0.0, min(1.0, score))

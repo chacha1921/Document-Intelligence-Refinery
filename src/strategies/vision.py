@@ -59,73 +59,80 @@ class VisionExtractor(BaseExtractor):
     def extract(self, file_path: str) -> ExtractedDocument:
         logger.info(f"VisionExtractor processing: {file_path}")
         
-        # 1. Check Budget
-        estimated_input_tokens = 1000 
-        if not self.budget_guard.check_budget(estimated_input_tokens):
-            raise RuntimeError("Vision extraction skipped due to budget constraints.")
+        # 1. Processing Loop (Should be page-by-page in real scenario)
+        # Mocking a loop over pages to demonstrate budget enforcement per step
+        
+        pages_to_process = [1] # Just one page for this mock
+        extracted_text_blocks = []
+        extracted_tables = []
+        
+        for page_num in pages_to_process:
+            # 2. Check Budget BEFORE processing next chunk
+            estimated_input_tokens = 1000 
+            if not self.budget_guard.check_budget(estimated_input_tokens):
+                logger.error("Vision extraction halted: Budget exceeded.")
+                # Return partial result instead of failing completely.
+                break 
 
-        response_content = ""
-        usage = {"prompt_tokens": 0, "completion_tokens": 0}
+            response_content = ""
+            usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
-        try:
-            if self.api_key:
-                # Real call placeholder
-                response_content = (
-                    "Executive Summary\n"
-                    "The document outlines Q3 financial performance.\n\n"
-                    "| Metric | Value |\n|---|---|\n| Revenue | $5M |"
-                )
-                usage["prompt_tokens"] = 800
-                usage["completion_tokens"] = 150
-                logger.info("Vision API call simulated.")
-            else:
-                logger.warning("No OPENAI_API_KEY found. Returning mock VLM data.")
-                response_content = "Mock Vision Content: Extracted text from image analysis."
-                usage = {"prompt_tokens": 500, "completion_tokens": 50}
-
-            # 3. Update Budget
-            self.budget_guard.update_usage(usage["prompt_tokens"], usage["completion_tokens"])
-
-            # 4. Parse Response (Demo logic)
-            lines = response_content.split('\n')
-            text_blocks = []
-            tables = []
-            
-            # Use dummy BBox for VLM output as it doesn't always give coordinates
-            dummy_bbox = BBox(x0=0.0, y0=0.0, x1=100.0, y1=100.0)
-            
-            for line in lines:
-                if "|" in line: 
-                    # Detect markdown table row
-                    cells = [c.strip() for c in line.split('|') if c.strip()]
-                    if cells:
-                         if not tables:
-                             tables.append(StructuredTable(
-                                 data=[], bounding_box=dummy_bbox, page_number=1
-                             ))
-                         tables[-1].data.append(cells)
+            try:
+                if self.api_key:
+                    # Real call placeholder
+                    response_content = (
+                        "Executive Summary\n"
+                        "The document outlines Q3 financial performance.\n\n"
+                        "| Metric | Value |\n|---|---|\n| Revenue | $5M |"
+                    )
+                    usage["prompt_tokens"] = 800
+                    usage["completion_tokens"] = 150
+                    logger.info("Vision API call simulated.")
                 else:
-                    if line.strip():
-                        text_blocks.append(TextBlock(
-                            text=line.strip(),
-                            bounding_box=dummy_bbox, 
-                            page_number=1,
-                            confidence=0.8
-                        ))
+                    logger.warning("No OPENAI_API_KEY found. Returning mock VLM data.")
+                    response_content = "Mock Vision Content: Extracted text from image analysis."
+                    usage = {"prompt_tokens": 500, "completion_tokens": 50}
 
-            return ExtractedDocument(
-                text_blocks=text_blocks,
-                structured_tables=tables,
-                figures=[], 
-                metadata={
-                    "extractor": "VisionExtractor",
-                    "model": self.model_name,
-                    "cost_usd": self.budget_guard.current_cost,
-                    "strategy_history": ["VisionExtractor"],
-                    "avg_confidence": 0.8 # Placeholder
-                }
-            )
+                # 3. Update Budget
+                self.budget_guard.update_usage(usage["prompt_tokens"], usage["completion_tokens"])
 
-        except Exception as e:
-            logger.error(f"Vision extraction failed: {e}")
-            raise
+                # 4. Parse Response (Demo logic)
+                lines = response_content.split('\n')
+                
+                # Use dummy BBox for VLM output as it doesn't always give coordinates
+                dummy_bbox = BBox(x0=0.0, y0=0.0, x1=100.0, y1=100.0)
+                
+                for line in lines:
+                    if "|" in line: 
+                        # Detect markdown table row
+                        cells = [c.strip() for c in line.split('|') if c.strip()]
+                        if cells:
+                             if not extracted_tables:
+                                 extracted_tables.append(StructuredTable(
+                                     data=[], bounding_box=dummy_bbox, page_number=page_num
+                                 ))
+                             extracted_tables[-1].data.append(cells)
+                    else:
+                        if line.strip():
+                            extracted_text_blocks.append(TextBlock(
+                                text=line.strip(),
+                                bounding_box=dummy_bbox,
+                                page_number=page_num,
+                                confidence=0.85 # Heuristic for VLM
+                            ))
+                            
+            except Exception as e:
+                logger.error(f"Error processing page {page_num}: {e}")
+                continue
+
+        return ExtractedDocument(
+            text_blocks=extracted_text_blocks,
+            structured_tables=extracted_tables,
+            figures=[],
+            metadata={
+                "extractor": f"Vision ({self.model_name})",
+                "tokens_used": self.budget_guard.current_tokens,
+                "cost_usd": self.budget_guard.current_cost,
+                "strategy_history": ["VisionExtractor"]
+            }
+        )
