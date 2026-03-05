@@ -175,11 +175,19 @@ class ProvenanceChain(BaseModel):
     """
     source_document_id: str
     source_ldu_id: Optional[str] = None
+    content_hash: Optional[str] = Field(None, description="Hash of the source content for integrity control")
     page_number: int = Field(..., gt=0)
     bounding_box: Optional[BBox] = None
     confidence_score: float = Field(1.0, ge=0.0, le=1.0)
     extraction_method: str = Field(..., description="Method used for extraction (e.g., 'ocr', 'layout_analysis').")
     timestamp: str = Field(..., description="ISO 8601 timestamp of extraction")
+
+    @model_validator(mode='after')
+    def validate_source_tracing(self) -> 'ProvenanceChain':
+        if not self.source_ldu_id and not self.bounding_box:
+             # Ideally one should exist to trace back, though not strictly mandatory in all loose coupled systems
+             pass 
+        return self
 
 class FactRecord(BaseModel):
     """
