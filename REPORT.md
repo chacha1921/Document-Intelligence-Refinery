@@ -1,4 +1,4 @@
-# Interim Report: The Document Intelligence Refinery
+# Mastered Report: The Document Intelligence Refinery
 **TRP1 Challenge Week 3 — Forward Deployed Engineer (FDE) Program**
 **Author:** Chalie Lijalem
 
@@ -26,131 +26,143 @@ During the development and testing phases, distinct patterns emerged when proces
 
 ---
 
-## 2. Extraction Strategy Decision Tree
+## 2. System Architecture
 
-The core logic of the Refinery is encapsulated in the `ExtractionRouter`. It follows a cost-aware escalation path:
-
-### Decision Tree Pipeline Diagram
-
-```mermaid
-graph TD
-    A[Ingest Document] --> B[Stage 1: Triage Agent]
-    B --> C{Origin & Layout Complexity?}
-    
-    C -->|Native Digital + Single Column| D[Strategy A: Fast Text Extractor]
-    C -->|Multi-column / Table Heavy| E[Strategy B: Layout-Aware Extractor]
-    C -->|Scanned / Handwriting| F[Strategy C: Vision-Augmented VLM]
-    
-    D --> G{Confidence Score > Threshold?}
-    G -->|Yes| H[Stage 3: Semantic Chunking Engine]
-    G -->|No: LOW CONFIDENCE| E
-    
-    E --> H
-    F --> H
-    
-    H --> I[Stage 4: Provenance Index Builder]
-    H --> J[(Vector Store)]
-    
-    I --> K[Stage 5: Query Interface Agent]
-    J --> K
-```
+The Refinery architecture is built around five distinct stages, interconnected by a shared data schema (`DocumentProfile`, `ExtractedDocument`, `LDU`) and a cross-cutting Provenance Layer.
 
 ### Architecture Diagram
+
 ```mermaid
 graph TD
-    %% Cross-cutting Provenance & Audit Layer
-    subgraph Cross-Cutting: Provenance & Audit Layer
-        EL[(.refinery/extraction_ledger.jsonl)]
-        PC_Builder[Provenance Builder: Maps bboxes & content_hash]
+    %% --- Cross-Cutting Provenance Layer ---
+    subgraph Provenance_Layer [Cross-Cutting: Provenance & Audit Layer]
+        direction TB
+        PL_Store[(.refinery/ledger.jsonl)]
+        PL_Chain[ProvenanceChain Model]
+        PL_Chain -.->|Linked by content_hash & bbox| PL_Store
     end
 
-    subgraph Stage 1: Triage Layer
-        Ingest[Raw Unstructured Document] --> TA[Triage Agent]
-        TA -->|origin_type, layout_complexity, domain_hint| DP([DocumentProfile Pydantic Model])
+    %% --- Stage 1: Triage ---
+    subgraph Stage_1 [Stage 1: Triage Agent]
+        Input[Raw PDF] --> TA[TriageAgent]
+        TA -->|Analyzes layout & domain| DP([DocumentProfile])
+        style DP fill:#f9f,stroke:#333
     end
 
-    subgraph Stage 2: Structure Extraction Layer
+    %% --- Stage 2: Extraction (Router) ---
+    subgraph Stage_2 [Stage 2: Extraction Router]
         DP --> ER{Extraction Router}
-        ER -->|Triggers on: native_digital, single_column| SA[Strategy A: FastTextExtractor]
-        ER -->|Triggers on: multi_column, table_heavy| SB[Strategy B: LayoutExtractor]
-        ER -->|Triggers on: scanned_image, handwriting| SC[Strategy C: VisionExtractor]
+        ER -->|Native/Simple| SA[Strategy A: FastText]
+        ER -->|Multi-Col/Table| SB[Strategy B: Layout]
+        ER -->|Scanned/Image| SC[Strategy C: Vision]
         
-        SA -->|Measures character density| CG{Escalation Guard}
-        CG -->|Low Confidence Score| SB
-        CG -->|High Confidence| ED([ExtractedDocument Pydantic Model])
-        SB --> ED
-        SC --> ED
+        SA -->|Output| ED([ExtractedDocument])
+        SB -->|Output| ED
+        SC -->|Output| ED
+        style ED fill:#f9f,stroke:#333
         
-        %% Ledger Logging
-        SA -.->|Logs strategy, cost, confidence| EL
-        SB -.->|Logs strategy, cost, confidence| EL
-        SC -.->|Logs strategy, cost, confidence| EL
+        %% Escalation Logic (Non-Linearity)
+        SA -.->|Low Confidence?| SB
+        SB -.->|Fail/Layout Error?| SC
     end
 
-    subgraph Stage 3: Semantic Chunking Engine
+    %% --- Stage 3: Chunking ---
+    subgraph Stage_3 [Stage 3: Semantic Chunking]
         ED --> CE[Chunking Engine]
-        CE -->|Applies Constitution Rules| CV[ChunkValidator]
-        CV --> LDU([List of LDU Pydantic Models])
+        CE -->|Applies Rules| CV[ChunkValidator]
+        CV -->|Validated| LDUs([List of LDU Objects])
+        style LDUs fill:#f9f,stroke:#333
     end
 
-    subgraph Stage 4: Provenance Index Builder
-        LDU --> PIB[PageIndex Builder]
-        LDU --> VS[(Vector Store: Chroma/FAISS)]
-        LDU --> FT[(FactTable SQLite Extractor)]
-        PIB -->|Generates section summaries| PI([PageIndex Navigation Tree])
+    %% --- Stage 4: Indexing ---
+    subgraph Stage_4 [Stage 4: Indexing & Storage]
+        LDUs --> PIB[PageIndex Builder]
+        PIB -->|Hierarchical Summarization| PI([PageIndex Tree])
+        LDUs --> VS[(Vector Store)]
+        LDUs --> FE[FactTable Extractor]
+        FE --> SQL[(SQLite Fact DB)]
     end
 
-    subgraph Stage 5: Query Interface Agent
-        Query[User Natural Language Query] --> QIA[LangGraph Query Agent]
-        QIA <-->|Tool 1: pageindex_navigate| PI
-        QIA <-->|Tool 2: semantic_search| VS
-        QIA <-->|Tool 3: structured_query| FT
-        
-        QIA --> PC_Builder
-        PC_Builder --> Output([Structured Answer + ProvenanceChain])
+    %% --- Stage 5: Querying ---
+    subgraph Stage_5 [Stage 5: Query Interface]
+        User[User Query] --> QA[LangGraph Query Agent]
+        QA <-->|Tool: Navigate| PI
+        QA <-->|Tool: Search| VS
+        QA <-->|Tool: SQL| SQL
+        QA -->|Verify Citation| PL_Chain
+        PL_Chain --> Result[Final Answer with Audit]
     end
+
+    %% Associations with Provenance
+    Stage_1 -.-> PL_Chain
+    Stage_2 -.-> PL_Chain
+    Stage_3 -.-> PL_Chain
+    Stage_5 -.-> PL_Chain
 ```
+
+### Stage Responsibilities & Data Flow
+
+1.  **Stage 1: Triage Agent**
+    *   **Input:** Raw PDF file.
+    *   **Responsibility:** Analyzes character density, image ratio, and domain keywords using `KeywordDomainClassifier`. Use pluggable strategies to determine `OriginType` and `ExtractionCost`.
+    *   **Output:** `DocumentProfile` (Pydantic model containing metadata, layout complexity, and strategy hints).
+
+2.  **Stage 2: Extraction Router**
+    *   **Input:** `DocumentProfile`.
+    *   **Responsibility:** Selects and executes the optimal strategy (FastText, Layout, or Vision). Handles non-linear escalation (e.g., if FastText confidence < 0.85 -> escalate to Layout).
+    *   **Output:** `ExtractedDocument` (Normalized Pydantic model with `text_blocks`, `structured_tables`, `figures`).
+
+3.  **Stage 3: Semantic Chunking**
+    *   **Input:** `ExtractedDocument`.
+    *   **Responsibility:** Splits text into Logical Document Units (LDUs) based on semantic breaks (paragraphs) or layout boundaries. Applies `ChunkValidator` rules (token limits, content presence).
+    *   **Output:** `List[LDU]` (Atomic content units with content_hash and bbox).
+
+4.  **Stage 4: Indexing & Storage**
+    *   **Input:** `List[LDU]`.
+    *   **Responsibility:** 
+        *   Builds specialized indices: `PageIndex` (Hierarchical Tree), Vector Embeddings (Semantic Search), and Fact Tables (SQL).
+        *   Generates summaries for higher-level `PageIndex` nodes.
+    *   **Output:** Persisted Artifacts (`.refinery/pageindex/*.json`, `refinery.db`, Vector Store).
+
+5.  **Stage 5: Query Interface**
+    *   **Input:** User Query.
+    *   **Responsibility:** Routes queries to the correct tool (Navigation, Search, or SQL). Verifies answers against the `ProvenanceChain` in "Audit Mode".
+    *   **Output:** Verified Answer with Citations.
+
 ---
 
 ## 3. Cost Analysis & Efficiency
 
-Enterprise document extraction costs are not uniform; they are highly sensitive to document heterogeneity and structural complexity. [cite_start]This analysis breaks down the derivation of compute costs, API token consumption, and processing latency across the three strategy tiers [cite: 193][cite_start], followed by a projection across the four distinct document classes.
+One of the project's primary goals was cost optimization. The table below details the cost breakdown, derived from standard cloud compute rates (AWS Lambda/EC2) and OpenAI API pricing (GPT-4o-mini).
 
-### A. Strategy Tier Derivations
+### Cost Efficiency Table
 
-| Strategy Tier | Infrastructure / Tooling | Derivation & Assumptions | Est. Cost / Page | Processing Time / Page |
+| Strategy | Token Cost (Input/Output) | Compute Cost (Time) | Total Est. Cost / Page | Derivation Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Strategy A (Fast Text)** | CPU Compute (`pdfplumber` / `pymupdf`) | [cite_start]Purely local compute[cite: 76]. Assumes standard cloud CPU instance (e.g., AWS t3.medium at ~$0.04/hr). Near-zero marginal cost per page. | **$0.00001** | **~0.1 - 0.2s** |
-| **Strategy B (Layout-Aware)** | GPU/Heavy CPU (`MinerU` / `Docling`) | [cite_start]Local execution of layout detection models[cite: 79]. Requires GPU or high-RAM CPU provisioning. Assumes cloud instance at ~$0.50/hr processing 10 pages/min. | **~$0.0008** | **~3.0 - 5.0s** |
-| **Strategy C (Vision-Augmented)**| API via OpenRouter (e.g., `gemini-1.5-flash`) | [cite_start]VLM API pricing[cite: 81]. Assuming 1 high-res image pass per page. ~2,500 input tokens per image + structured schema prompt. At $0.075 / 1M tokens (Flash pricing). API network latency introduces variable processing time. | **~$0.0002** | **~4.0 - 8.0s** |
+| **Strategy A (FastText)** | N/A (Local CPU) | ~0.5s @ $0.000016/s | **$0.00001** | Based on AWS Lambda ARM64 (128MB). Negligible. |
+| **Strategy B (Layout)** | N/A (Local GPU) | ~3.0s @ $0.004/s | **$0.012** | Based on g4dn.xlarge spot instance. Heavy ML inference. |
+| **Strategy C (Vision)** | $0.15 / 1M (In) <br> $0.60 / 1M (Out) | API Latency (Variable) | **$0.002 - $0.05** | Variable. *See Breakdown below.* |
 
-*Note: While Strategy C (Flash VLM) appears cheaper per page than Strategy B (Cloud GPU runtime), Strategy B avoids third-party data egress, which is often a hard constraint in enterprise banking/legal deployments.*
+### Cost Derivation & Variability Analysis
 
-### B. Heterogeneous Document Cost Projections
+The usage costs for **Strategy C (Vision)** are highly variable based on document density. We analyzed two distinct document classes:
 
-[cite_start]Because the `ExtractionRouter` relies on the `TriageAgent` to dynamically route pages[cite: 64, 75], the actual cost per document varies drastically based on its specific class. [cite_start]Below is the projected economic profile for a standardized 100-page document across the four target classes[cite: 155]:
+#### Scenario 1: Sparse Document (e.g., Slide Deck, Receipt)
+*   **Visual Complexity:** Medium (Charts/Logos).
+*   **Token Count:** ~800 tokens (image tiles + text).
+*   **Processing Time:** ~2-3 seconds.
+*   **Cost Calculation:** `(800/1000000 * $0.15) + (100/1000000 * $0.60)`
+*   **Total:** **$0.00018** per page.
 
-1. [cite_start]**Class A: Annual Financial Report (Native Digital, Mixed Layout)** [cite: 156, 157]
-   * [cite_start]**Routing:** 70% Narrative (Strategy A), 30% Financial Tables (Strategy B via Escalation Guard)[cite: 79, 84].
-   * **Est. Pipeline Cost:** (70 * $0.00001) + (30 * $0.0008) = **$0.024**
-   * **Est. Processing Time:** (70 * 0.15s) + (30 * 4.0s) = **~2.2 minutes**
+#### Scenario 2: Dense Document (e.g., Legal Contract, Medical Record)
+*   **Visual Complexity:** High (Small font, dense text).
+*   **Token Count:** ~15,000 tokens (High-res tiles needed for legibility).
+*   **Processing Time:** ~10-15 seconds.
+*   **Cost Calculation:** `(15000/1000000 * $0.15) + (500/1000000 * $0.60)`
+*   **Total:** **$0.00255** per page.
 
-2. [cite_start]**Class B: Scanned Audit Report (Image-based)** [cite: 159, 160]
-   * [cite_start]**Routing:** 100% routed to Strategy C due to lack of character stream[cite: 161]. 
-   * **Est. Pipeline Cost:** 100 * $0.0002 = **$0.020** (API Token Cost)
-   * **Est. Processing Time:** 100 * 6.0s = **~10.0 minutes** (API Rate Limits may extend this)
+*Note: While Strategy C is "expensive" relative to FastText, it is orders of magnitude cheaper than human data entry ($0.50 - $2.00 per page).*
 
-3. [cite_start]**Class C: Technical Assessment (Native Digital, Standard Layout)** [cite: 162, 163]
-   * [cite_start]**Routing:** 90% Strategy A, 10% Strategy B (embedded findings tables)[cite: 164].
-   * **Est. Pipeline Cost:** (90 * $0.00001) + (10 * $0.0008) = **$0.008**
-   * **Est. Processing Time:** (90 * 0.15s) + (10 * 4.0s) = **~53 seconds**
-
-4. [cite_start]**Class D: Fiscal Tax Expenditure (Table-Heavy, Multi-year data)** [cite: 165, 166]
-   * [cite_start]**Routing:** 10% Strategy A (Headers/Intro), 90% Strategy B (High-fidelity multi-column extraction)[cite: 166].
-   * **Est. Pipeline Cost:** (10 * $0.00001) + (90 * $0.0008) = **$0.072**
-   * **Est. Processing Time:** (10 * 0.15s) + (90 * 4.0s) = **~6.0 minutes**
-
-**Conclusion on Economics:** The Escalation Guard is the primary cost-saving mechanism. [cite_start]By aggressively defaulting to Strategy A and escalating only when character density thresholds fail[cite: 48, 84], the system maintains high fidelity on Class D documents while keeping Class C processing times under a minute.
 ---
 
 ## 4. Extraction Quality Analysis
