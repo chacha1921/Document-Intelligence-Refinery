@@ -1,0 +1,29 @@
+{
+  "title": "General Document Scientific_3",
+  "start_page": 1,
+  "end_page": 5,
+  "children": [
+    {
+      "title": "Introduction",
+      "start_page": 1,
+      "end_page": 1,
+      "children": [],
+      "ldu_refs": []
+    },
+    {
+      "title": "Body",
+      "start_page": 2,
+      "end_page": 4,
+      "children": [],
+      "ldu_refs": []
+    },
+    {
+      "title": "Conclusion",
+      "start_page": 5,
+      "end_page": 5,
+      "children": [],
+      "ldu_refs": []
+    }
+  ],
+  "ldu_refs": []
+}

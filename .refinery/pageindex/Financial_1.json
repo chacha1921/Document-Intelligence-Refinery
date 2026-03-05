@@ -1,0 +1,52 @@
+{
+  "title": "Financial Report Financial_1",
+  "start_page": 1,
+  "end_page": 10,
+  "children": [
+    {
+      "title": "Executive Summary",
+      "start_page": 1,
+      "end_page": 2,
+      "children": [],
+      "ldu_refs": [
+        "hash1"
+      ]
+    },
+    {
+      "title": "Consolidated Financial Statements",
+      "start_page": 3,
+      "end_page": 8,
+      "children": [
+        {
+          "title": "Balance Sheet",
+          "start_page": 3,
+          "end_page": 4,
+          "children": [],
+          "ldu_refs": [
+            "hash2"
+          ]
+        },
+        {
+          "title": "Income Statement",
+          "start_page": 5,
+          "end_page": 6,
+          "children": [],
+          "ldu_refs": [
+            "hash3"
+          ]
+        }
+      ],
+      "ldu_refs": []
+    },
+    {
+      "title": "Notes to Financials",
+      "start_page": 9,
+      "end_page": 10,
+      "children": [],
+      "ldu_refs": [
+        "hash4"
+      ]
+    }
+  ],
+  "ldu_refs": []
+}

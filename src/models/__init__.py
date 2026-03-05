@@ -1,6 +1,6 @@
-from typing import List, Optional, Union, Dict, Any, Tuple
+from typing import List, Optional, Union, Dict, Any
 from enum import Enum
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 # --- Enums for Document Analysis ---
 
@@ -48,6 +48,12 @@ class DocumentProfile(BaseModel):
     estimated_extraction_cost: ExtractionCost = Field(
         ..., 
         description="Recommended extraction strategy based on complexity."
+    )
+    classification_confidence: float = Field(
+        1.0, 
+        ge=0.0, 
+        le=1.0, 
+        description="Confidence score of the classification logic."
     )
 
 
@@ -127,6 +133,16 @@ class LDU(BaseModel):
     parent_section: Optional[str] = Field(None, description="Title of the section this unit belongs to.")
     token_count: int = Field(..., description="Number of tokens in the content.")
     content_hash: str = Field(..., description="Hash of the content for deduplication.")
+    children: List["LDU"] = Field(default_factory=list, description="Child LDUs for hierarchical structure") 
+
+    @model_validator(mode='after')
+    def validate_content_presence(self) -> 'LDU':
+        if not self.content and not self.children:
+             raise ValueError("LDU must have either content or children.")
+        return self
+
+# Resolve forward reference for recursive model
+LDU.model_rebuild()
 
 
 # --- Page Index (Tree Structure) ---
@@ -139,6 +155,13 @@ class PageIndex(BaseModel):
     start_page: int = Field(..., gt=0)
     end_page: Optional[int] = Field(None, gt=0)
     children: List["PageIndex"] = Field(default_factory=list)
+    ldu_refs: List[str] = Field(default_factory=list, description="IDs of LDUs in this section")
+
+    @model_validator(mode='after')
+    def check_page_order(self) -> 'PageIndex':
+        if self.end_page is not None and self.start_page > self.end_page:
+            raise ValueError(f"start_page ({self.start_page}) cannot be greater than end_page ({self.end_page})")
+        return self
 
 # Resolve forward reference for recursive model
 PageIndex.model_rebuild()
@@ -156,3 +179,14 @@ class ProvenanceChain(BaseModel):
     bounding_box: Optional[BBox] = None
     confidence_score: float = Field(1.0, ge=0.0, le=1.0)
     extraction_method: str = Field(..., description="Method used for extraction (e.g., 'ocr', 'layout_analysis').")
+    timestamp: str = Field(..., description="ISO 8601 timestamp of extraction")
+
+class FactRecord(BaseModel):
+    """
+    Represents a discrete fact extracted from the document for the data layer.
+    """
+    entity: str
+    attribute: str
+    value: Union[str, float, int]
+    unit: Optional[str] = None
+    provenance: ProvenanceChain
