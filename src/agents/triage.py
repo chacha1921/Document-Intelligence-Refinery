@@ -1,287 +1,296 @@
-import logging
+"""
+Stage 1: Triage Agent for the Document Intelligence Refinery.
+Analyzes an incoming PDF and generates a DocumentProfile.
+"""
+import sys
+import os
+import json
+from pathlib import Path
+from typing import List, Dict, Any, Counter
 import pdfplumber
-import yaml
-from abc import ABC, abstractmethod
-from typing import Optional, Dict, List, Tuple
-from collections import Counter
-
-from src.models import (
-    DocumentProfile, 
-    OriginType, 
-    LayoutComplexity, 
-    ExtractionCost
-)
-
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# --- Pluggable Domain Strategy Interface ---
-
-class DomainClassifierStrategy(ABC):
-    """
-    Abstract Base Class for domain classification.
-    Allows swapping between simple keyword matching, VLM-based, or ML-based classifiers.
-    """
-    @abstractmethod
-    def classify(self, text_sample: str) -> Tuple[Optional[str], float]:
-        """
-        Classifies the domain of the text.
-        Returns: (domain_name, confidence_score)
-        """
-        pass
-
-class KeywordDomainClassifier(DomainClassifierStrategy):
-    """
-    Classifies domain based on keyword frequency configuration.
-    """
-    def __init__(self, keywords_config: Dict[str, List[str]]):
-        self.keywords_config = keywords_config
-
-    def classify(self, text_sample: str) -> Tuple[Optional[str], float]:
-        if not text_sample or not self.keywords_config:
-            return None, 0.0
-
-        text_lower = text_sample.lower()
-        domain_scores = Counter()
-        
-        total_hits = 0
-        for domain, keywords in self.keywords_config.items():
-            for kw in keywords:
-                if kw.lower() in text_lower:
-                    domain_scores[domain] += 1
-                    total_hits += 1
-        
-        if not domain_scores:
-            return None, 0.0
-            
-        best_domain, count = domain_scores.most_common(1)[0]
-        # Simple confidence: hits for this domain / total hits
-        confidence = count / total_hits if total_hits > 0 else 0.0
-        return best_domain, confidence
-
-# --- Main Triage Agent ---
+from src.models.schemas import DocumentProfile
 
 class TriageAgent:
     """
-    Analyzes a PDF document to determine its properties and optimal extraction strategy.
-    
-    Attributes:
-        config (Dict): Configuration dictionary loaded from extraction_rules.yaml.
-        domain_classifier (DomainClassifierStrategy): Strategy for domain hints.
+    Analyzes a document to determine its origin, layout complexity, domain, and estimated extraction cost.
     """
-    
-    def __init__(self, config_path: str = "rubric/extraction_rules.yaml"):
-        """
-        Initialize the TriageAgent.
-        """
-        self.config = self._load_config(config_path)
-        logger.info(f"TriageAgent initialized with config from {config_path}")
-        
-        # Initialize the configured domain strategy
-        # In a more complex app, this could be dependency-injected
-        self.domain_classifier = KeywordDomainClassifier(self.config.get("domain_keywords", {}))
+    def __init__(self, output_dir: str = ".refinery/profiles"):
+        # Use absolute path relative to workspace root if simpler, or relative to cwd
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def _load_config(self, config_path: str) -> Dict:
-        """Loads the YAML configuration file."""
-        try:
-            with open(config_path, 'r') as f:
-                return yaml.safe_load(f)
-        except Exception as e:
-            logger.error(f"Failed to load config file: {e}")
-            return {
-                "thresholds": {"character_density_min": 50, "image_area_ratio_max": 0.4},
-                "domain_keywords": {}
-            }
+    def analyze(self, pdf_path: str) -> DocumentProfile:
+        """
+        Main entry point for analyzing a PDF.
+        """
+        if not os.path.exists(pdf_path):
+             raise FileNotFoundError(f"File not found: {pdf_path}")
 
-    def analyze(self, file_path: str) -> DocumentProfile:
-        """
-        Analyzes the PDF document and returns a DocumentProfile.
-        """
-        logger.info(f"Starting analysis for document: {file_path}")
+        doc_id = Path(pdf_path).stem
         
         try:
-            with pdfplumber.open(file_path) as pdf:
-                # 1. Determine Origin Type
-                origin_type, pages_stats = self._determine_origin_type(pdf)
-                logger.info(f"Determined Origin Type: {origin_type}")
-
-                # 2. Determine Layout Complexity
-                layout_complexity = self._determine_layout_complexity(pdf, pages_stats)
-                logger.info(f"Determined Layout Complexity: {layout_complexity}")
-
-                # 3. Determine Domain Hint (Using Pluggable Strategy)
-                # usage: extract sample text first
-                sample_text = self._extract_sample_text(pdf)
-                domain_hint, domain_conf = self.domain_classifier.classify(sample_text)
-                logger.info(f"Determined Domain Hint: {domain_hint} (Conf: {domain_conf:.2f})")
+            with pdfplumber.open(pdf_path) as pdf:
+                # 1. Origin Type Detection
+                origin_type = self._detect_origin_type(pdf)
                 
-                # 4. Estimate Extraction Cost and Triage Confidence
-                extraction_cost = self._estimate_extraction_cost(origin_type, layout_complexity)
+                # 2. Layout Complexity Detection
+                layout_complexity = self._detect_layout_complexity(pdf)
                 
-                # Calculate overall classification confidence
-                # Heuristic: Lower confidence if "Mixed" origin or weak domain signal
-                triage_confidence = 1.0
-                if origin_type == OriginType.MIXED:
-                    triage_confidence *= 0.8
-                if not domain_hint:
-                    triage_confidence *= 0.9
+                # 3. Domain Hint Classifier
+                # Extract text from the first few pages for domain classification
+                full_text = ""
+                # Limit to first 5 pages to save time/memory
+                pages_to_scan = pdf.pages[:5] 
+                
+                for page in pages_to_scan:
+                    text = page.extract_text()
+                    if text:
+                        full_text += text + " "
+                
+
+                domain_hint = self._classify_domain(full_text)
+                
+                # 4. Estimated Cost
+                estimated_extraction_cost = self._estimate_cost(origin_type, layout_complexity)
+                
+                # Language detection
+                language, language_confidence = self._detect_language(full_text)
 
                 profile = DocumentProfile(
                     origin_type=origin_type,
                     layout_complexity=layout_complexity,
-                    language="en", 
+                    language=language,
+                    language_confidence=language_confidence,
                     domain_hint=domain_hint,
-                    estimated_extraction_cost=extraction_cost,
-                    classification_confidence=triage_confidence
+                    estimated_extraction_cost=estimated_extraction_cost
                 )
                 
-                logger.info("Document analysis completed successfully.")
+                self._save_profile(doc_id, profile)
                 return profile
 
         except Exception as e:
-            logger.error(f"Error analyzing document {file_path}: {e}")
+            print(f"Error analyzing document: {e}")
+            # Return a fallback or re-raise. For this pipeline, re-raising is better.
             raise
 
-    def _extract_sample_text(self, pdf) -> str:
-        """Extracts text from the first few pages for analysis."""
-        sample_text = ""
-        try:
-            for page in pdf.pages[:3]:
-                text = page.extract_text()
-                if text:
-                    sample_text += text + " "
-        except Exception:
-            pass # Be resilient to partial extraction failures
-        return sample_text
 
-    def _determine_origin_type(self, pdf) -> Tuple[OriginType, List[Dict]]:
+    def _detect_origin_type(self, pdf) -> str:
         """
-        Analyzes pages for character density to determine if it's digital, scanned, etc.
+        Distinguishes between native_digital, scanned_image, mixed, form_fillable.
         """
-        total_pages = len(pdf.pages)
-        if total_pages == 0:
-            # Handle empty PDF edge case
-            return OriginType.MIXED, []
+        total_chars = 0
+        total_image_area = 0
+        total_page_area = 0
+        has_acroform = False
+        
+        # Check for AcroForm presence (strong signal for form_fillable)
+        if hasattr(pdf, 'doc') and pdf.doc.catalog and 'AcroForm' in pdf.doc.catalog:
+            has_acroform = True
 
-        native_text_pages = 0
-        image_only_pages = 0
-        form_elements_detected = False
-        
-        pages_stats = []
-        
-        char_density_min = self.config.get("thresholds", {}).get("character_density_min", 50)
-        image_ratio_max = self.config.get("thresholds", {}).get("image_area_ratio_max", 0.4)
-        
-        for i, page in enumerate(pdf.pages):
-            text = page.extract_text() or ""
-            char_count = len(text)
+        # Check first 3 pages
+        pages_to_check = pdf.pages[:3]
+        if not pages_to_check:
+            return "mixed" # Empty PDF?
             
-            image_area = 0
+        for page in pages_to_check:
+            chars = page.chars
+            total_chars += len(chars)
+            
+            # Calculate image area
             for img in page.images:
-                w = img.get('x1', 0) - img.get('x0', 0)
-                h = img.get('bottom', 0) - img.get('top', 0)
-                if w > 0 and h > 0:
-                   image_area += w * h
-            
-            page_area = max(1, page.width * page.height)
-            image_ratio = image_area / page_area
-            
-            stats = {
-                "page_num": i + 1,
-                "char_count": char_count,
-                "image_ratio": image_ratio,
-                "has_tables": bool(page.find_tables())
-            }
-            pages_stats.append(stats)
-
-            if char_count < char_density_min:
-                # Very low text count -> Likely Scanned or Image-heavy
-                image_only_pages += 1
-            else:
-                # Text is present
-                if image_ratio > image_ratio_max:
-                     # High text AND high image? Likely mixed layer or heavy graphics
-                     # Could count as mixed, but often handled as digital with images
-                     # For safety, if ratio is VERY high, assume scanned or complex
-                     pass
-                native_text_pages += 1
-
-            if page.annots:
-                for annot in page.annots:
-                    if annot.get("subtype") == "Widget":
-                        form_elements_detected = True
-
-        # Decision Logic
-        if form_elements_detected:
-            return OriginType.FORM_FILLABLE, pages_stats
-            
-        if image_only_pages == total_pages:
-            return OriginType.SCANNED_IMAGE, pages_stats
-        
-        # If we have significant native text pages (e.g. > 90%), treat as native
-        if native_text_pages / total_pages > 0.9:
-            return OriginType.NATIVE_DIGITAL, pages_stats
-            
-        return OriginType.MIXED, pages_stats
-
-    def _determine_layout_complexity(self, pdf, pages_stats: List[Dict]) -> LayoutComplexity:
-        """
-        Determines layout complexity based on columns and tables.
-        """
-        if not pages_stats:
-            return LayoutComplexity.SINGLE_COLUMN
-
-        table_heavy_count = sum(1 for p in pages_stats if p["has_tables"])
-        total_pages = len(pages_stats)
-        
-        if total_pages > 0 and (table_heavy_count / total_pages) > 0.3:
-            return LayoutComplexity.TABLE_HEAVY
-
-        multi_column_detected = False
-        check_pages = pdf.pages[:min(total_pages, 3)] 
-        
-        for page in check_pages:
-            words = page.extract_words()
-            if not words:
-                continue
+                w = float(img.get('width', 0))
+                h = float(img.get('height', 0))
+                total_image_area += w * h
                 
-            page_mid = page.width / 2
-            left_side_words = [w for w in words if w['x1'] < page_mid]
-            right_side_words = [w for w in words if w['x0'] > page_mid]
-            
-            if len(left_side_words) > 50 and len(right_side_words) > 50:
-                 multi_column_detected = True
-                 break
-        
-        if multi_column_detected:
-            return LayoutComplexity.MULTI_COLUMN
-            
-        return LayoutComplexity.SINGLE_COLUMN
+            total_page_area += float(page.width) * float(page.height)
 
-    def _estimate_extraction_cost(self, origin: OriginType, layout: LayoutComplexity) -> ExtractionCost:
+        # Heuristics
+        # 1. Scanned: Very few characters, significant image area
+        image_ratio = total_image_area / total_page_area if total_page_area > 0 else 0
+        
+        if total_chars < 500 and image_ratio > 0.4:
+            return "scanned_image"
+
+        # 2. Form Fillable: Explicit AcroForm or explicit structure
+        if has_acroform:
+            return "form_fillable"
+            
+        # 3. Native Digital
+        if total_chars > 500:
+            return "native_digital"
+            
+        return "mixed"
+
+    def _detect_layout_complexity(self, pdf) -> str:
         """
-        Maps origin and layout to an extraction strategy/cost.
+        Detects if single_column, multi_column, table_heavy, figure_heavy, or mixed.
         """
-        if origin == OriginType.SCANNED_IMAGE or origin == OriginType.MIXED:
-            return ExtractionCost.NEEDS_VISION_MODEL
+        pages_to_check = pdf.pages[:3]
+        total_tables = 0
+        total_figures = 0
+        is_multi_column = False
+        
+        for page in pages_to_check:
+            # Check for tables
+            tables = page.find_tables()
+            if tables:
+                total_tables += len(tables)
+
+            # Check for figures (images)
+            total_figures += len(page.images)
             
-        if layout in [LayoutComplexity.TABLE_HEAVY, LayoutComplexity.MULTI_COLUMN, LayoutComplexity.FIGURE_HEAVY]:
-            return ExtractionCost.NEEDS_LAYOUT_MODEL
+            # Check for columns
+            if page.chars and not is_multi_column:
+                width = float(page.width)
+                mid_x = width / 2
+                
+                # Canvas the central 10% strip
+                strip_width = width * 0.1
+                left_bound = mid_x - (strip_width / 2)
+                right_bound = mid_x + (strip_width / 2)
+                
+                # Count chars in left, center, right regions
+                left_chars = 0
+                right_chars = 0
+                center_chars = 0
+                
+                for c in page.chars:
+                    x0 = float(c.get('x0', 0))
+                    if x0 < left_bound:
+                        left_chars += 1
+                    elif x0 > right_bound:
+                        right_chars += 1
+                    else:
+                        center_chars += 1
+                
+                # If significant text on both sides but empty center
+                if left_chars > 50 and right_chars > 50 and center_chars < 10:
+                    is_multi_column = True
+
+        # Decision Logic (Prioritize complexity)
+        # If multiple complex features are present, return 'mixed'
+        complexity_factors = 0
+        if total_tables > 1: complexity_factors += 1
+        if is_multi_column: complexity_factors += 1
+        if total_figures > 2: complexity_factors += 1
+        
+        if complexity_factors > 1:
+            return "mixed"
+
+        if total_tables > 1:
+             return "table_heavy"
+        
+        if is_multi_column:
+             return "multi_column"
+             
+        if total_figures > 2:
+             return "figure_heavy"
             
-        if origin == OriginType.FORM_FILLABLE:
-            return ExtractionCost.NEEDS_LAYOUT_MODEL 
+        return "single_column"
+
+
+    def _classify_domain(self, text: str) -> str:
+        """
+        Keyword-based domain hinting.
+        """
+        text = text.lower()
+        
+        keywords = {
+            "financial": ["balance sheet", "income statement", "cash flow", "fiscal year", "audit", "revenue", "profit", "loss", "assets", "liabilities"],
+            "legal": ["agreement", "contract", "parties", "witnesseth", "hereby", "indemnification", "jurisdiction", "plaintiff", "defendant", "pursuant"],
+            "medical": ["patient", "diagnosis", "treatment", "symptoms", "clinical", "hospital", "prescription", "physician", "history"],
+            "technical": ["algorithm", "system", "architecture", "api", "database", "server", "client", "interface", "parameter", "function", "method"],
+        }
+        
+        scores = {k: 0 for k in keywords}
+        
+        for domain, keys in keywords.items():
+            for key in keys:
+                if key in text:
+                    scores[domain] += 1
+        
+        # Return domain with max score if > 0
+        best_domain = max(scores, key=scores.get)
+        if scores[best_domain] > 0:
+            return best_domain
             
-        return ExtractionCost.FAST_TEXT_SUFFICIENT
+        return "general"
+
+
+    def _estimate_cost(self, origin: str, layout: str) -> str:
+        """
+        Rules for estimated extraction cost.
+        """
+        if origin == "scanned_image":
+            return "needs_vision_model"
+        
+        if layout in ["multi_column", "table_heavy", "figure_heavy", "mixed"]:
+            return "needs_layout_model"
+            
+        if origin == "native_digital" and layout == "single_column":
+            return "fast_text_sufficient"
+            
+        if origin == "form_fillable":
+             # Forms often need structure preservation, so layout model is safer than raw text dump
+             return "needs_layout_model"
+
+        return "needs_layout_model" # Fallback
+
+    def _detect_language(self, text: str) -> tuple[str, float]:
+        """
+        Simple stop-word based language detection.
+        Returns (language_code, confidence).
+        """
+        if not text:
+            return "en", 0.0
+
+        # Truncate text for performance
+        text_sample = text[:5000].lower()
+        words = set(text_sample.split())
+        
+        # Common stopwords for supported languages
+        stopwords = {
+            "en": {"the", "and", "is", "of", "to", "in", "that", "it"},
+            "fr": {"le", "la", "et", "de", "un", "es", "est", "que"}, # 'es' is also 'plural' in FR sometimes or typo common
+            "es": {"el", "la", "y", "de", "en", "un", "es", "que"},
+            "de": {"der", "die", "und", "in", "den", "von", "zu", "das"}
+        }
+        
+        scores = {}
+        for lang, stops in stopwords.items():
+            intersection = words.intersection(stops)
+            scores[lang] = len(intersection)
+            
+        if not scores or max(scores.values()) == 0:
+            return "en", 0.0 # Default fallback
+            
+        best_lang = max(scores, key=scores.get)
+        best_score = scores[best_lang]
+        
+        # Confidence logic:
+        # If we find 5+ stopwords, we are fairly confident (1.0).
+        # Be careful not to divide by zero if best_score is low.
+        confidence = min(1.0, best_score / 5.0) 
+        
+        return best_lang, confidence
+
+    def _save_profile(self, doc_id: str, profile: DocumentProfile):
+        output_path = self.output_dir / f"{doc_id}.json"
+        with open(output_path, "w") as f:
+            f.write(profile.model_dump_json(indent=2))
+        print(f"[TriageAgent] Profile saved to {output_path}")
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) > 1:
-        agent = TriageAgent()
+        pdf_path = sys.argv[1]
+        print(f"Analyzing {pdf_path}...")
         try:
-            result = agent.analyze(sys.argv[1])
-            print(result.model_dump_json(indent=2))
+            agent = TriageAgent()
+            profile = agent.analyze(pdf_path)
+            print("Analysis Complete:")
+            print(profile.model_dump_json(indent=2))
         except Exception as e:
-            print(f"Analysis failed: {e}")
+            print(f"Failed to analyze: {e}")
+            sys.exit(1)
     else:
-        print("Usage: python src/agents/triage.py <path_to_pdf>")
+        print("Usage: python -m src.agents.triage <path_to_pdf>")
