@@ -262,26 +262,57 @@ class LayoutExtractor(BaseExtractor):
             if pics:
                 logger.info(f"Found {len(pics)} figures in Docling result.")
                 for i, pic in enumerate(pics):
-                     # Try to get bbox if available (Docling v2 often has .self_ref.bbox)
+                     # 1. Extract Bounding Box & Page Number
+                     page_no = 1
                      bbox = [0.0, 0.0, 0.0, 0.0]
-                     if hasattr(pic, 'self_ref') and hasattr(pic.self_ref, 'bbox'):
-                         b = pic.self_ref.bbox
-                         # Normalize or copy
-                         # Docling bbox might be [l, t, r, b] or similar object
-                         # We'll just take it if it's iterable, else placeholder
-                         try:
-                             bbox = [float(x) for x in b] if hasattr(b, '__iter__') else [0,0,0,0]
-                         except:
-                             pass
                      
+                     if hasattr(pic, 'prov') and pic.prov:
+                        p = pic.prov[0]
+                        if hasattr(p, 'page_no'):
+                            page_no = p.page_no
+                        if hasattr(p, 'bbox'):
+                            b = p.bbox
+                            if hasattr(b, 'l') and hasattr(b, 't') and hasattr(b, 'r') and hasattr(b, 'b'):
+                                bbox = [float(b.l), float(b.t), float(b.r), float(b.b)]
+                     
+                     # 2. Extract Captions
+                     caption = None
+                     if hasattr(pic, 'captions') and pic.captions:
+                        # Assuming captions is a list of caption objects with text or text attribute
+                        # Or it might be a list of strings? Let's be robust.
+                        caps = []
+                        for c in pic.captions:
+                            if hasattr(c, 'text'):
+                                caps.append(c.text)
+                            else:
+                                caps.append(str(c))
+                        if caps:
+                            caption = " ".join(caps)
+
+                     fig_id = f"layout_figure_{i}"
                      extracted_doc.figures.append(Figure(
-                         id=f"layout_figure_{i}",
-                         page_number=pic.page_no if hasattr(pic, 'page_no') else 1,
+                         id=fig_id,
+                         page_number=page_no,
                          bbox=bbox,
+                         caption=caption,
                          image_ref=f"layout_img_{i}" # Placeholder
                      ))
                      # Add to reading order (simplified append at end)
-                     extracted_doc.reading_order.append(f"layout_figure_{i}")
+                     extracted_doc.reading_order.append(fig_id)
+
+            # --- Fix 1: Spatial Reading Order ---
+            # Sort all elements by Page Number, then Top Y-Coordinate
+            all_elements = []
+            all_elements.extend(extracted_doc.text_blocks)
+            all_elements.extend(extracted_doc.tables)
+            all_elements.extend(extracted_doc.figures)
+            
+            # Sort key: (page_number, bbox.top)
+            # Ensure bbox has at least 2 elements (l, t, r, b). If not, default to 0.
+            all_elements.sort(key=lambda x: (x.page_number, x.bbox[1] if x.bbox and len(x.bbox) > 1 else 0))
+            
+            # Rebuild reading order
+            extracted_doc.reading_order = [elem.id for elem in all_elements]
 
             return extracted_doc, 0.90
 
