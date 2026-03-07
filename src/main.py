@@ -4,16 +4,30 @@ Main entry point for the Document Intelligence Refinery pipeline.
 import argparse
 import sys
 import logging
+import colorlog
 from pathlib import Path
 from src.agents.triage import TriageAgent
 from src.agents.extractor import ExtractionRouter
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+handler = colorlog.StreamHandler()
+handler.setFormatter(colorlog.ColoredFormatter(
+    '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    log_colors={
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'bold_red',
+    }
+))
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+root_logger.addHandler(handler)
+
 logger = logging.getLogger(__name__)
 
 def run_triage(file_path: str):
@@ -68,6 +82,7 @@ def run_process(file_path: str):
         print(f"Reading Order Items: {len(extracted_doc.reading_order)}")
         print(f"Text Blocks: {len(extracted_doc.text_blocks)}")
         print(f"Tables: {len(extracted_doc.tables)}")
+        print(f"Figures: {len(extracted_doc.figures)}")
         print("----------------------------------\n")
         
         # Determine output file

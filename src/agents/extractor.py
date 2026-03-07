@@ -2,7 +2,7 @@
 Stage 2: Extraction Router Agent.
 Reads a DocumentProfile and routes the PDF to the appropriate extraction strategy.
 Implements Escalation Guard logic.
-""" 
+"""
 import os
 import time
 import json
@@ -31,7 +31,7 @@ class ExtractionRouter:
         
         # Initialize strategy instances
         self.fast_extractor = FastTextExtractor()
-        self.layout_extractor = LayoutExtractor() # Docling Placeholder
+        self.layout_extractor = LayoutExtractor() # Docling/Placeholder
         self.vision_extractor = VisionExtractor(token_limit=50000) # Vision Placeholder
 
     def _load_rules(self, path: str) -> Dict[str, Any]:

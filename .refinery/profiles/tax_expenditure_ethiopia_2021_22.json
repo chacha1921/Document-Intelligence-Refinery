@@ -1,8 +1,8 @@
 {
   "origin_type": "native_digital",
-  "layout_complexity": "single_column",
+  "layout_complexity": "table_heavy",
   "language": "en",
   "language_confidence": 1.0,
-  "domain_hint": "technical",
-  "estimated_extraction_cost": "fast_text_sufficient"
+  "domain_hint": "financial",
+  "estimated_extraction_cost": "needs_layout_model"
 }
