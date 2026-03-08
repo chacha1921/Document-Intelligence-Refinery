@@ -52,13 +52,13 @@ class PageIndexBuilder:
             # Default to a fast local model if not specified
             self.model_name = model_name or "llama3.2:latest" 
 
-    def build(self, ldus: List[LDU], doc_id: str) -> List[SectionNode]:
+        self.index_tree = None
+
+    def build(self, ldus: List[LDU], doc_id: str) -> PageIndex:
         """
-        Groups LDUs by parent_section, enriches them with LLM summaries, 
-        and returns a list of SectionNodes.
+        Builds a hierarchical PageIndex from LDUs.
         """
         # 1. Sort LDUs by parent_section (required for groupby)
-        # We handle None parent_section by converting to empty string for sorting
         sorted_ldus = sorted(ldus, key=lambda x: x.parent_section if x.parent_section else "")
         
         sections: List[SectionNode] = []
@@ -71,8 +71,11 @@ class PageIndexBuilder:
                 
             # Metadata Extraction
             page_numbers = []
+            valid_ldus = []
             for ldu in section_ldus:
-                page_numbers.extend(ldu.page_refs)
+                if ldu.page_refs:
+                    page_numbers.extend(ldu.page_refs)
+                valid_ldus.append(ldu)
             
             if not page_numbers:
                 page_start = 0
@@ -88,23 +91,16 @@ class PageIndexBuilder:
             key_entities = []
             
             try:
-                # Check for active client
-                has_client = (self.provider == "gemini" and self.gemini_client) or \
-                             (self.provider == "ollama" and self.ollama_client)
-                             
-                if has_client:
-                    # Aggregate text
-                    combined_text = "\n".join([ldu.content for ldu in section_ldus])
-                    # Truncate to save token window
-                    truncated_text = combined_text[:12000] 
-                    
-                    # Guardrail: Check word count before sending to LLM to prevent hallucinations on tiny chunks
-                    word_count = len(truncated_text.split())
-                    if word_count < 30:
-                        summary = truncated_text
-                        key_entities = []
-                    else:
-                        summary, key_entities = self._enrich_section(section_title, truncated_text)
+                # Aggregate text
+                combined_text = "\n".join([ldu.content for ldu in section_ldus])
+                truncated_text = combined_text[:12000] 
+                
+                word_count = len(truncated_text.split())
+                if word_count < 30:
+                    summary = truncated_text
+                    key_entities = []
+                else:
+                    summary, key_entities = self._enrich_section(section_title, truncated_text)
             except Exception as e:
                 logger.error(f"Error enriching section '{section_title}': {e}")
                 
@@ -116,24 +112,74 @@ class PageIndexBuilder:
                 child_sections=[], # Flat structure for now as per grouping logic
                 key_entities=key_entities,
                 summary=summary,
-                data_types_present=data_types
+                data_types_present=data_types,
+                source_ldu_ids=[ldu.id for ldu in section_ldus]
             )
             sections.append(node)
             
         # 4. Sort by page_start
         sections.sort(key=lambda x: x.page_start)
+        
+        # 5. Build Tree (Simple Root approach for now as sections are flat)
+        root = SectionNode(
+            title="Document Root",
+            page_start=sections[0].page_start if sections else 0,
+            page_end=sections[-1].page_end if sections else 0,
+            summary=f"Parsed Document: {doc_id}",
+            child_sections=sections,
+            key_entities=[],
+            data_types_present=[]
+        )
+        
+        self.index_tree = PageIndex(root=root)
             
-        # 5. Output: Save to JSON
+        # 6. Output: Save to JSON (Hierarchical Format)
         output_dir = Path(".refinery/pageindex")
         output_dir.mkdir(parents=True, exist_ok=True)
         output_file = output_dir / f"{doc_id}_index.json"
         
         with open(output_file, "w", encoding="utf-8") as f:
-            f.write(json.dumps([s.model_dump() for s in sections], indent=2))
+            # We save the full tree structure for hierarchical traversal
+            f.write(self.index_tree.model_dump_json(indent=2))
         
         logger.info(f"Page index saved to {output_file}")
         
-        return sections
+        return self.index_tree
+
+    def traverse(self, query: str, top_n: int = 5) -> List[SectionNode]:
+        """
+        Traverses the hierarchical tree to find relevant sections.
+        """
+        if not self.index_tree:
+             return []
+        
+        # Flatten all nodes for searching
+        all_nodes = []
+        queue = [self.index_tree.root]
+        
+        while queue:
+            node = queue.pop(0)
+            if node.title != "Document Root":
+                all_nodes.append(node)
+            queue.extend(node.child_sections)
+            
+        # Score nodes
+        scored_nodes = []
+        q_lower = query.lower()
+        
+        for node in all_nodes:
+            score = 0
+            if q_lower in node.title.lower(): score += 5
+            if q_lower in node.summary.lower(): score += 3
+            for entity in node.key_entities:
+                if q_lower in entity.lower(): score += 4
+            
+            if score > 0:
+                scored_nodes.append((score, node))
+                
+        scored_nodes.sort(key=lambda x: x[0], reverse=True)
+        return [x[1] for x in scored_nodes[:top_n]]
+
 
     def _enrich_section(self, title: str, text: str) -> tuple[str, List[str]]:
         """

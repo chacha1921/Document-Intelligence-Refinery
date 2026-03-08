@@ -7,6 +7,7 @@ import hashlib
 import logging
 from typing import List, Optional, Any, Dict
 from src.models.schemas import ExtractedDocument, LDU, TextBlock, Table, Figure
+from src.agents.validator import ChunkValidator
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class ChunkingEngine:
     def __init__(self):
         self.current_section = "Document Root"
         self.ldus: List[LDU] = []
+        self.validator = ChunkValidator()
 
     def chunk(self, doc: ExtractedDocument) -> List[LDU]:
         """
@@ -52,7 +54,7 @@ class ChunkingEngine:
             else:
                 logger.warning(f"Unknown element type for {element_id}")
 
-        return self.ldus
+        return [ldu for ldu in self.ldus if self.validator.validate(ldu)]
 
     def _process_table(self, table: Table):
         """

@@ -46,8 +46,29 @@ def pageindex_navigate(query: str) -> str:
     for index_file in index_dir.glob("*_index.json"):
         try:
             with open(index_file, "r", encoding="utf-8") as f:
-                sections = json.load(f)
-                all_sections.extend(sections)
+                data = json.load(f)
+                
+                # Check for list (legacy) or dict (hierarchical)
+                if isinstance(data, list):
+                    all_sections.extend(data)
+                elif isinstance(data, dict) and "root" in data:
+                    # Flatten the tree for simple search in this tool
+                    # (Traversal logic is also available in PageIndexBuilder but let's keep this tool self-contained or use the hierarchy)
+                    root = data["root"]
+                    queue = [root]
+                    while queue:
+                        node = queue.pop(0)
+                        if node.get("title") != "Document Root":
+                             all_sections.append(node)
+                        # Add children
+                        if "child_sections" in node:
+                            queue.extend(node["child_sections"])
+                else:
+                    logger.warning(f"Unknown format in {index_file}")
+
+        except Exception as e:
+            logger.error(f"Error loading index {index_file}: {e}")
+            continue
         except Exception as e:
             logger.error(f"Failed to load index file {index_file}: {e}")
             continue

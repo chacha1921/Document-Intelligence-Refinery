@@ -85,6 +85,8 @@ class SectionNode(BaseModel):
     key_entities: List[str] = Field(default_factory=list)
     summary: str
     data_types_present: List[str] = Field(default_factory=list)
+    # Provenance
+    source_ldu_ids: List[str] = Field(default_factory=list, description="IDs of LDUs that formed this section")
 
 # Handle forward reference for recursive model
 SectionNode.model_rebuild()

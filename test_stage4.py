@@ -44,21 +44,35 @@ def test_stage_4():
     # 3. Build Index
     doc_id = "tax_expenditure_ethiopia_2021_22"
     print(f"Building index for {doc_id}...")
-    sections = indexer.build(ldus, doc_id)
+    page_index = indexer.build(ldus, doc_id)
     
     # 4. Verify Output
     output_file = Path(f".refinery/pageindex/{doc_id}_index.json")
     
     if output_file.exists():
         print(f"Success! Index saved to {output_file}")
-        print(f"Total Sections: {len(sections)}")
         
-        # Print first few sections
-        for i, section in enumerate(sections[:3]):
-            print(f"\nSection {i+1}: {section.title}")
-            print(f"  Pages: {section.page_start}-{section.page_end}")
-            print(f"  Summary: {section.summary[:100]}...")
-            print(f"  Entities: {section.key_entities}")
+        # Handle PageIndex object
+        if hasattr(page_index, 'root'):
+            root = page_index.root
+            children = root.child_sections
+            print(f"Index Root: {root.title}")
+            print(f"Total Top-Level Sections: {len(children)}")
+            
+            # Print first few sections
+            for i, section in enumerate(children[:3]):
+                print(f"\nSection {i+1}: {section.title}")
+                print(f"  Pages: {section.page_start}-{section.page_end}")
+                print(f"  Summary: {section.summary[:100]}...")
+                print(f"  Entities: {section.key_entities}")
+        else:
+            # Fallback for list (if implementation changes back)
+            print(f"Total Sections: {len(page_index)}")
+            for i, section in enumerate(page_index[:3]):
+                print(f"\nSection {i+1}: {section.title}")
+                print(f"  Pages: {section.page_start}-{section.page_end}")
+                print(f"  Summary: {section.summary[:100]}...")
+                print(f"  Entities: {section.key_entities}")
     else:
         print("Error: Output file not created.")
 
