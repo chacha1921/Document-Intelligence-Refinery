@@ -96,7 +96,11 @@ def run_vector_embedding(ldus: List[LDU], doc_id: str):
                 "source": doc_id,
                 "section": parent_section or "Unknown",
                 "pages": str(page_refs),
-                "element_id": element_id
+                "element_id": element_id,
+                # Enhanced Metadata for Provenance & Filtering
+                "chunk_type": getattr(ldu, 'chunk_type', 'unknown'),
+                "content_hash": getattr(ldu, 'content_hash', 'unknown'),
+                "bbox": str(getattr(ldu, 'bounding_box', []))
             }
             
             documents.append(Document(page_content=content, metadata=metadata))
