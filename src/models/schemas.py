@@ -74,26 +74,26 @@ class LDU(BaseModel):
     content_hash: str
 
 # 4. PageIndex (Recursive Tree Structure)
-class Section(BaseModel):
+class SectionNode(BaseModel):
     """
     A node in the document's table of contents or logical structure tree.
     """
     title: str
     page_start: int
     page_end: int
-    child_sections: List["Section"] = Field(default_factory=list)
+    child_sections: List["SectionNode"] = Field(default_factory=list)
     key_entities: List[str] = Field(default_factory=list)
-    summary: Optional[str] = None
+    summary: str
     data_types_present: List[str] = Field(default_factory=list)
 
 # Handle forward reference for recursive model
-Section.model_rebuild()
+SectionNode.model_rebuild()
 
 class PageIndex(BaseModel):
     """
     The hierarchical structure of the document.
     """
-    root: Section
+    root: SectionNode
 
 # 5. ProvenanceChain
 class SourceCitation(BaseModel):
